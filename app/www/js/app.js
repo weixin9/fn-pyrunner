@@ -1,0 +1,356 @@
+(function () {
+  "use strict";
+
+  const apiFetch = window.pyrunnerCommon
+    ? window.pyrunnerCommon.apiFetch.bind(window.pyrunnerCommon)
+    : function (path, options) { return fetch("./api/" + path.replace(/^\//, ""), options); };
+
+  function api(path, options) {
+    const url = path.startsWith("/") ? path : "/" + path;
+    return apiFetch(url, options).then(function (r) {
+      return r.ok ? r.json() : r.json().then(function (e) {
+        return Promise.reject(new Error(e.error || "HTTP " + r.status));
+      });
+    });
+  }
+
+  let editor = null;
+  let currentPath = "";
+  let savedContent = "";
+  let isDirty = false;
+  let currentTaskId = null;
+  let pollTimer = null;
+  let lastStdoutLen = 0;
+  let lastStderrLen = 0;
+
+  const els = {
+    filePath: document.getElementById("filePath"),
+    unsavedDot: document.getElementById("unsavedDot"),
+    btnSave: document.getElementById("btnSave"),
+    btnRun: document.getElementById("btnRun"),
+    btnStop: document.getElementById("btnStop"),
+    argsInput: document.getElementById("argsInput"),
+    outputArea: document.getElementById("outputArea"),
+    statusDot: document.getElementById("statusDot"),
+    statusText: document.getElementById("statusText"),
+    exitCodeDisplay: document.getElementById("exitCodeDisplay"),
+    exitCodeValue: document.getElementById("exitCodeValue"),
+    editorPanel: document.getElementById("editorPanel"),
+    emptyState: document.getElementById("emptyState"),
+    outputPanel: document.getElementById("outputPanel"),
+    resizeHandle: document.getElementById("resizeHandle"),
+    toast: document.getElementById("toast"),
+  };
+
+  function detectTheme() {
+    try {
+      const cookie = document.cookie.split(";").map(function (s) { return s.trim(); })
+        .find(function (s) { return s.startsWith("fnos-theme-mode="); });
+      if (cookie) {
+        const val = decodeURIComponent(cookie.split("=")[1] || "").toLowerCase();
+        if (val === "10" || val === "light") return "light";
+        if (val === "20" || val === "dark") return "dark";
+      }
+    } catch (e) { /* ignore */ }
+    try {
+      const parentStored = window.parent && window.parent.localStorage
+        ? window.parent.localStorage.getItem("fnos-theme-mode") : null;
+      if (parentStored === "10" || parentStored === "light") return "light";
+      if (parentStored === "20" || parentStored === "dark") return "dark";
+    } catch (e) { /* ignore */ }
+    return window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches
+      ? "dark" : "light";
+  }
+
+  function applyTheme() {
+    document.documentElement.dataset.theme = detectTheme();
+    if (editor) {
+      editor.setOption("theme", detectTheme() === "dark" ? "material-darker" : "eclipse");
+    }
+  }
+
+  function showToast(msg, type) {
+    if (!els.toast) return;
+    els.toast.textContent = msg;
+    els.toast.className = "toast show" + (type ? " " + type : "");
+    clearTimeout(showToast._timer);
+    showToast._timer = setTimeout(function () { els.toast.className = "toast"; }, 2500);
+  }
+  window.pyrunnerShowToast = showToast;
+
+  function setDirty(dirty) {
+    isDirty = dirty;
+    if (els.unsavedDot) els.unsavedDot.classList.toggle("visible", dirty);
+    const name = currentPath ? currentPath.split("/").pop() : "Python 编辑器";
+    document.title = (dirty ? "● " : "") + name + " - pyrunner";
+  }
+
+  function initEditor() {
+    if (editor || !els.editorPanel) return;
+    editor = CodeMirror(els.editorPanel, {
+      value: "",
+      mode: "python",
+      theme: detectTheme() === "dark" ? "material-darker" : "eclipse",
+      lineNumbers: true,
+      indentUnit: 4,
+      tabSize: 4,
+      indentWithTabs: false,
+      lineWrapping: false,
+      autofocus: true,
+      extraKeys: {
+        Tab: function (cm) {
+          if (cm.somethingSelected()) cm.indentSelection("add");
+          else cm.replaceSelection("    ", "end");
+        },
+        "Ctrl-S": function () { saveFile(); },
+        "Cmd-S": function () { saveFile(); },
+        "F5": function () { runScript(); },
+      },
+    });
+    editor.on("change", function () {
+      setDirty(editor.getValue() !== savedContent);
+    });
+    applyTheme();
+  }
+
+  function setCurrentPath(path) {
+    if (!path || path === currentPath) return;
+    currentPath = path;
+    loadFile();
+  }
+
+  function loadFile() {
+    if (!currentPath) {
+      if (els.emptyState) els.emptyState.style.display = "flex";
+      if (els.filePath) els.filePath.textContent = "未打开文件";
+      if (window.pyrunnerEnv) window.pyrunnerEnv.setScriptPath("");
+      return;
+    }
+
+    if (els.emptyState) els.emptyState.style.display = "none";
+    if (els.filePath) {
+      els.filePath.textContent = currentPath;
+      els.filePath.title = currentPath;
+    }
+    if (window.pyrunnerEnv) window.pyrunnerEnv.setScriptPath(currentPath);
+
+    api("/file?path=" + encodeURIComponent(currentPath))
+      .then(function (data) {
+        savedContent = data.content;
+        if (!editor) initEditor();
+        editor.setValue(data.content);
+        editor.clearHistory();
+        setDirty(false);
+      })
+      .catch(function (err) {
+        showToast("加载失败: " + err.message, "error");
+        if (!editor) initEditor();
+      });
+  }
+
+  function saveFile() {
+    if (!currentPath) {
+      showToast("未打开文件，无法保存", "error");
+      return;
+    }
+    if (!editor) return;
+
+    const content = editor.getValue();
+    if (els.btnSave) els.btnSave.disabled = true;
+
+    api("/file", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path: currentPath, content: content }),
+    })
+      .then(function () {
+        savedContent = content;
+        setDirty(false);
+        showToast("已保存", "success");
+      })
+      .catch(function (err) { showToast("保存失败: " + err.message, "error"); })
+      .finally(function () { if (els.btnSave) els.btnSave.disabled = false; });
+  }
+
+  function clearOutput() {
+    if (els.outputArea) els.outputArea.innerHTML = "";
+  }
+
+  function addLine(text, cls) {
+    if (!els.outputArea) return;
+    const div = document.createElement("div");
+    div.className = "line " + (cls || "stdout");
+    div.textContent = text;
+    els.outputArea.appendChild(div);
+    els.outputArea.scrollTop = els.outputArea.scrollHeight;
+  }
+
+  function setStatus(status, text) {
+    if (els.statusDot) els.statusDot.className = "status-dot " + status;
+    if (els.statusText) els.statusText.textContent = text;
+  }
+
+  function setRunning(running) {
+    if (els.btnRun) els.btnRun.disabled = running;
+    if (els.btnStop) els.btnStop.disabled = !running;
+    if (els.argsInput) els.argsInput.disabled = running;
+    if (editor) editor.setOption("readOnly", running);
+  }
+
+  function runScript() {
+    if (!currentPath) {
+      showToast("未打开文件，无法运行", "error");
+      return;
+    }
+
+    const doRun = function () {
+      clearOutput();
+      lastStdoutLen = 0;
+      lastStderrLen = 0;
+      const args = els.argsInput ? els.argsInput.value : "";
+      const runtime = window.pyrunnerEnv ? window.pyrunnerEnv.getRuntime() : {};
+      const py = runtime.python_path || "python3";
+      addLine("$ " + py + " " + currentPath + (args ? " " + args : ""), "info");
+      if (runtime.mode === "venv") addLine("# venv: " + runtime.venv_path, "info");
+      addLine("", "stdout");
+
+      setStatus("running", "运行中...");
+      setRunning(true);
+      if (els.exitCodeDisplay) els.exitCodeDisplay.style.display = "none";
+
+      const url = "/execute?path=" + encodeURIComponent(currentPath) +
+        "&args=" + encodeURIComponent(args);
+
+      api(url)
+        .then(function (data) {
+          currentTaskId = data.task_id;
+          pollTimer = setInterval(function () { pollTask(currentTaskId); }, 400);
+        })
+        .catch(function (err) {
+          addLine("启动失败: " + err.message, "error");
+          setStatus("error", "失败");
+          setRunning(false);
+        });
+    };
+
+    if (!isDirty) {
+      doRun();
+      return;
+    }
+
+    const content = editor.getValue();
+    api("/file", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path: currentPath, content: content }),
+    })
+      .then(function () {
+        savedContent = content;
+        setDirty(false);
+        doRun();
+      })
+      .catch(function (err) {
+        showToast("自动保存失败: " + err.message, "error");
+      });
+  }
+
+  function pollTask(taskId) {
+    api("/task/" + taskId)
+      .then(function (data) {
+        if (data.stdout && data.stdout.length > lastStdoutLen) {
+          const newOut = data.stdout.substring(lastStdoutLen);
+          lastStdoutLen = data.stdout.length;
+          newOut.split("\n").forEach(function (line, i, arr) {
+            if (i < arr.length - 1 || newOut.endsWith("\n")) addLine(line, "stdout");
+            else if (line) addLine(line, "stdout");
+          });
+        }
+        if (data.stderr && data.stderr.length > lastStderrLen) {
+          const newErr = data.stderr.substring(lastStderrLen);
+          lastStderrLen = data.stderr.length;
+          newErr.split("\n").forEach(function (line, i, arr) {
+            if (i < arr.length - 1 || newErr.endsWith("\n")) addLine(line, "stderr");
+            else if (line) addLine(line, "stderr");
+          });
+        }
+
+        if (data.status === "running" || data.status === "pending") return;
+
+        clearInterval(pollTimer);
+        pollTimer = null;
+        setRunning(false);
+
+        const code = data.exit_code;
+        if (els.exitCodeDisplay) els.exitCodeDisplay.style.display = "";
+        if (els.exitCodeValue) {
+          els.exitCodeValue.textContent = code;
+          els.exitCodeValue.className = "exit-code " + (code === 0 ? "success" : "fail");
+        }
+
+        const statusMap = {
+          done: ["done", "完成"],
+          error: ["error", "错误"],
+          timeout: ["error", "超时"],
+          killed: ["error", "已终止"],
+        };
+        const mapped = statusMap[data.status] || ["done", data.status];
+        setStatus(mapped[0], mapped[1]);
+      })
+      .catch(function () {
+        clearInterval(pollTimer);
+        setRunning(false);
+        setStatus("error", "失败");
+      });
+  }
+
+  function stopScript() {
+    if (!currentTaskId) return;
+    apiFetch("/task/" + currentTaskId + "/stop", { method: "POST" }).catch(function () { /* ignore */ });
+  }
+
+  function setupResize() {
+    if (!els.resizeHandle || !els.outputPanel) return;
+    els.resizeHandle.addEventListener("mousedown", function (e) {
+      const startY = e.clientY;
+      const startH = els.outputPanel.offsetHeight;
+      function onMove(ev) {
+        const delta = startY - ev.clientY;
+        const newH = Math.max(80, Math.min(window.innerHeight * 0.6, startH + delta));
+        els.outputPanel.style.height = newH + "px";
+      }
+      function onUp() {
+        document.removeEventListener("mousemove", onMove);
+        document.removeEventListener("mouseup", onUp);
+      }
+      document.addEventListener("mousemove", onMove);
+      document.addEventListener("mouseup", onUp);
+    });
+  }
+
+  function initApp() {
+    if (els.btnSave) els.btnSave.addEventListener("click", saveFile);
+    if (els.btnRun) els.btnRun.addEventListener("click", runScript);
+    if (els.btnStop) els.btnStop.addEventListener("click", stopScript);
+    setupResize();
+
+    if (window.pyrunnerCommon) {
+      window.pyrunnerCommon.watchFilePath(setCurrentPath);
+    } else {
+      const params = new URLSearchParams(window.location.search);
+      setCurrentPath(params.get("path") || "");
+    }
+
+    window.addEventListener("beforeunload", function (e) {
+      if (isDirty) {
+        e.preventDefault();
+        e.returnValue = "";
+      }
+    });
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", initApp);
+  } else {
+    initApp();
+  }
+})();

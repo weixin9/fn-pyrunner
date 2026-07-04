@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Python 编辑器 - pyrunner</title>
+  <!-- 必须在 CSS 之前设置 base，否则 /app/pyrunner 无尾斜杠时静态资源会 404 -->
+  <script>
+    (function () {
+      var p = location.pathname.replace(/\/index\.html$/, "");
+      if (!p.endsWith("/")) p += "/";
+      var base = document.createElement("base");
+      base.href = p;
+      document.head.appendChild(base);
+    })();
+  </script>
+  <link rel="stylesheet" href="vendor/codemirror.min.css">
+  <link rel="stylesheet" href="vendor/theme-dark.css">
+  <link rel="stylesheet" href="vendor/theme-light.css">
+  <link rel="stylesheet" href="css/app.css?v=1.1.8">
+</head>
+<body>
+  <div class="app-shell">
+    <header class="topbar">
+      <div class="topbar-left">
+        <div class="app-logo">Py</div>
+        <h1>Python 编辑器</h1>
+        <span class="unsaved-dot" id="unsavedDot" title="有未保存的更改"></span>
+        <span class="file-path" id="filePath">未打开文件</span>
+        <button class="env-badge" id="envBadge" title="当前运行环境">环境</button>
+      </div>
+      <div class="topbar-right">
+        <input type="text" class="args-input" id="argsInput" placeholder="运行参数（可选）">
+        <button class="btn" id="btnEnv" title="环境设置">⚙ 环境</button>
+        <button class="btn" id="btnSave" title="Ctrl+S">保存</button>
+        <button class="btn btn-primary btn-run" id="btnRun" title="F5">
+          <span class="icon">▶</span> 运行
+        </button>
+        <button class="btn btn-danger" id="btnStop" disabled title="停止运行">停止</button>
+      </div>
+    </header>
+
+    <div class="main-area" id="mainArea">
+      <div class="editor-panel" id="editorPanel">
+        <div class="empty-state" id="emptyState">
+          <h2>Python 脚本编辑器</h2>
+          <p>在飞牛文件管理器中双击或右键选择「Python 编辑器」打开 .py 文件，即可在此编辑和运行 Python 脚本。</p>
+        </div>
+      </div>
+
+      <div class="resize-handle" id="resizeHandle"></div>
+
+      <div class="output-panel" id="outputPanel">
+        <div class="output-header">
+          <span>输出</span>
+          <div class="output-status">
+            <span class="status-dot" id="statusDot"></span>
+            <span id="statusText">就绪</span>
+            <span id="exitCodeDisplay" style="display:none">
+              退出码: <span class="exit-code" id="exitCodeValue"></span>
+            </span>
+          </div>
+        </div>
+        <div class="output-area" id="outputArea"></div>
+      </div>
+    </div>
+
+    <!-- 环境设置页（与编辑器切换显示，避免 iframe 弹窗失效） -->
+    <div class="env-panel" id="envPanel" hidden>
+      <div class="env-panel-header">
+        <h2 id="envModalTitle">环境设置</h2>
+        <button class="btn" id="envBackBtn" type="button">← 返回编辑</button>
+      </div>
+      <div class="env-tabs">
+        <button class="env-tab active" type="button" data-tab="interpreter">解释器</button>
+        <button class="env-tab" type="button" data-tab="venv">虚拟环境</button>
+        <button class="env-tab" type="button" data-tab="pip">pip 包</button>
+      </div>
+      <div class="env-panel-body">
+        <div class="env-tab-panel active" id="tab-interpreter">
+          <div class="form-group">
+            <label for="pythonSelect">Python 解释器</label>
+            <div class="form-row">
+              <select id="pythonSelect" class="form-select"></select>
+              <button class="btn" id="btnRefreshPython" type="button">刷新</button>
+            </div>
+            <p class="form-hint">选择用于创建虚拟环境和运行脚本的 Python 解释器</p>
+          </div>
+          <div class="form-group">
+            <label for="pipIndexInput">pip 镜像源</label>
+            <input type="text" id="pipIndexInput" class="form-input" placeholder="https://pypi.tuna.tsinghua.edu.cn/simple">
+            <p class="form-hint">默认使用清华大学 PyPI 镜像，安装 pip 包时生效</p>
+          </div>
+          <div class="form-group" id="saveToLocalGroup">
+            <label class="checkbox-label">
+              <input type="checkbox" id="saveToLocalCheck">
+              保存配置到项目目录 <code>.pyrunner</code> 文件
+            </label>
+            <p class="form-hint" id="configSourceHint">下次打开时将优先从 .pyrunner 读取配置，否则使用全局配置</p>
+          </div>
+          <button class="btn btn-primary" id="btnSaveEnv" type="button">保存设置</button>
+        </div>
+
+        <div class="env-tab-panel" id="tab-venv">
+          <div class="form-group">
+            <label for="projectDirInput">项目目录</label>
+            <input type="text" id="projectDirInput" class="form-input" readonly>
+          </div>
+          <div class="form-group">
+            <label for="venvSelect">运行环境</label>
+            <select id="venvSelect" class="form-select"></select>
+            <p class="form-hint">自动探测当前目录下已存在的虚拟环境；若无可用 venv 可点击「创建 .venv」</p>
+          </div>
+          <div class="form-row">
+            <button class="btn btn-primary" id="btnCreateVenv" type="button">创建 .venv</button>
+          </div>
+          <div class="venv-log" id="venvLog"></div>
+        </div>
+
+        <div class="env-tab-panel" id="tab-pip">
+          <div class="form-group">
+            <label for="pipPackageInput">安装 pip 包</label>
+            <div class="form-row">
+              <input type="text" id="pipPackageInput" class="form-input" placeholder="requests numpy==1.26.0">
+              <button class="btn btn-primary" id="btnPipInstall" type="button">安装</button>
+            </div>
+            <p class="form-hint">支持多个包名，空格分隔。使用上方配置的镜像源安装到当前虚拟环境</p>
+          </div>
+          <div class="form-group">
+            <div class="form-row">
+              <label>已安装包</label>
+              <button class="btn btn-sm" id="btnRefreshPackages" type="button">刷新</button>
+            </div>
+            <div class="package-list" id="packageList">
+              <div class="package-empty">暂无数据，请先创建虚拟环境</div>
+            </div>
+          </div>
+          <div class="pip-log" id="pipLog"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="toast" id="toast"></div>
+
+  <script src="js/common.js?v=1.1.8"></script>
+  <script src="vendor/codemirror.min.js"></script>
+  <script src="vendor/python.min.js"></script>
+  <script src="js/env.js?v=1.1.8"></script>
+  <script src="js/app.js?v=1.1.8"></script>
+</body>
+</html>

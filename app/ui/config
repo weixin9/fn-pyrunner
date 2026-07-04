@@ -1,0 +1,22 @@
+{
+    ".url": {
+        "pyrunner.Application": {
+            "title": "Python 编辑器",
+            "icon": "images/icon_{0}.png",
+            "type": "iframe",
+            "url": "/app/pyrunner/",
+            "gatewaySocket": "pyrunner.sock",
+            "gatewayPrefix": "/app/pyrunner",
+            "allUsers": false,
+            "control": {
+                "accessPerm": "readonly",
+                "fullUrlPerm": "readonly",
+                "pathPerm": "readonly"
+            },
+            "fileTypes": [
+                "py"
+            ],
+            "noDisplay": false
+        }
+    }
+}

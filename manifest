@@ -1,0 +1,10 @@
+appname               = pyrunner
+version               = 1.1.8
+display_name          = Python 编辑器
+desc                  = Python 脚本编辑器，支持语法高亮、虚拟环境、pip 包管理和脚本运行。默认使用清华 PyPI 镜像。
+arch                  = x86_64
+source                = thirdparty
+maintainer            = pyrunner
+distributor           = pyrunner
+desktop_uidir         = ui
+desktop_applaunchname = pyrunner.Application
