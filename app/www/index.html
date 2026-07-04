@@ -17,7 +17,7 @@
   <link rel="stylesheet" href="vendor/codemirror.min.css">
   <link rel="stylesheet" href="vendor/theme-dark.css">
   <link rel="stylesheet" href="vendor/theme-light.css">
-  <link rel="stylesheet" href="css/app.css?v=1.1.8">
+  <link rel="stylesheet" href="css/app.css?v=1.1.14">
 </head>
 <body>
   <div class="app-shell">
@@ -27,16 +27,24 @@
         <h1>Python 编辑器</h1>
         <span class="unsaved-dot" id="unsavedDot" title="有未保存的更改"></span>
         <span class="file-path" id="filePath">未打开文件</span>
-        <button class="env-badge" id="envBadge" title="当前运行环境">环境</button>
+        <button class="env-badge" id="envBadge" title="当前运行环境" type="button">环境</button>
       </div>
       <div class="topbar-right">
         <input type="text" class="args-input" id="argsInput" placeholder="运行参数（可选）">
-        <button class="btn" id="btnEnv" title="环境设置">⚙ 环境</button>
-        <button class="btn" id="btnSave" title="Ctrl+S">保存</button>
-        <button class="btn btn-primary btn-run" id="btnRun" title="F5">
-          <span class="icon">▶</span> 运行
-        </button>
-        <button class="btn btn-danger" id="btnStop" disabled title="停止运行">停止</button>
+        <div class="topbar-actions">
+          <button class="btn btn-icon-text" id="btnEnv" title="环境设置" type="button">
+            <span class="btn-glyph">⚙</span><span class="btn-text">环境</span>
+          </button>
+          <button class="btn btn-icon-text" id="btnSave" title="保存 (Ctrl+S)" type="button">
+            <span class="btn-glyph">💾</span><span class="btn-text">保存</span>
+          </button>
+          <button class="btn btn-primary btn-run btn-icon-text" id="btnRun" title="运行 (F5)" type="button">
+            <span class="btn-glyph icon">▶</span><span class="btn-text">运行</span>
+          </button>
+          <button class="btn btn-danger btn-icon-text" id="btnStop" disabled title="停止运行" type="button">
+            <span class="btn-glyph">■</span><span class="btn-text">停止</span>
+          </button>
+        </div>
       </div>
     </header>
 
@@ -52,7 +60,10 @@
 
       <div class="output-panel" id="outputPanel">
         <div class="output-header">
-          <span>输出</span>
+          <button class="output-header-left" id="btnToggleOutput" type="button" title="收起输出" aria-expanded="true">
+            <span class="output-title">输出</span>
+            <span class="output-toggle-icon" aria-hidden="true">▼</span>
+          </button>
           <div class="output-status">
             <span class="status-dot" id="statusDot"></span>
             <span id="statusText">就绪</span>
@@ -69,7 +80,7 @@
     <div class="env-panel" id="envPanel" hidden>
       <div class="env-panel-header">
         <h2 id="envModalTitle">环境设置</h2>
-        <button class="btn" id="envBackBtn" type="button">← 返回编辑</button>
+        <button class="btn" id="envBackBtn" type="button" title="返回编辑">← 返回</button>
       </div>
       <div class="env-tabs">
         <button class="env-tab active" type="button" data-tab="interpreter">解释器</button>
@@ -143,10 +154,10 @@
 
   <div class="toast" id="toast"></div>
 
-  <script src="js/common.js?v=1.1.8"></script>
+  <script src="js/common.js?v=1.1.14"></script>
   <script src="vendor/codemirror.min.js"></script>
   <script src="vendor/python.min.js"></script>
-  <script src="js/env.js?v=1.1.8"></script>
-  <script src="js/app.js?v=1.1.8"></script>
+  <script src="js/env.js?v=1.1.14"></script>
+  <script src="js/app.js?v=1.1.14"></script>
 </body>
 </html>

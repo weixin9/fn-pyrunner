@@ -124,8 +124,27 @@ button, input, select, textarea { font: inherit; }
   display: flex;
   align-items: center;
   gap: 8px;
+  flex-shrink: 1;
+  min-width: 0;
+}
+
+.topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   flex-shrink: 0;
 }
+
+.btn-icon-text {
+  gap: 4px;
+}
+
+.btn-glyph {
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+.btn-run .btn-glyph.icon { font-size: 11px; }
 
 .btn {
   display: inline-flex;
@@ -160,7 +179,7 @@ button, input, select, textarea { font: inherit; }
   border-color: var(--danger);
 }
 
-.btn-run .icon { font-size: 11px; }
+.btn-run .btn-glyph.icon { font-size: 11px; }
 
 .args-input {
   padding: 5px 10px;
@@ -217,9 +236,66 @@ button, input, select, textarea { font: inherit; }
   background: #2d2d2d;
   border-bottom: 1px solid #444;
   flex-shrink: 0;
+  gap: 8px;
 }
 
-.output-header span {
+.output-header-left {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+  padding: 2px 6px 2px 0;
+  margin: 0;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  transition: background 0.15s;
+}
+
+.output-header-left:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.output-header-left:hover .output-title,
+.output-header-left:hover .output-toggle-icon {
+  color: #ddd;
+}
+
+.output-title {
+  font-size: 12px;
+  color: #aaa;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.output-toggle-icon {
+  font-size: 11px;
+  line-height: 1;
+  color: #aaa;
+}
+
+.main-area.output-collapsed .resize-handle {
+  display: none;
+}
+
+.main-area.output-collapsed .output-panel {
+  height: auto !important;
+  min-height: 0;
+}
+
+.main-area.output-collapsed .output-area {
+  display: none;
+}
+
+.main-area.output-collapsed .output-header {
+  border-bottom: none;
+}
+
+.output-header span:not(.output-title):not(.status-dot):not(.exit-code) {
   font-size: 12px;
   color: #aaa;
   font-weight: 600;
@@ -524,3 +600,165 @@ button, input, select, textarea { font: inherit; }
   font-size: 13px;
 }
 
+/* ── 手机 / 窄屏适配 ── */
+@media (max-width: 767px) {
+  body {
+    font-size: 13px;
+  }
+
+  .app-shell {
+    height: 100dvh;
+  }
+
+  .topbar {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+    padding: 8px max(10px, env(safe-area-inset-right)) 8px max(10px, env(safe-area-inset-left));
+  }
+
+  .topbar-left {
+    width: 100%;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+
+  .topbar h1 {
+    display: none;
+  }
+
+  .file-path {
+    max-width: none;
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+
+  .env-badge {
+    max-width: 120px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .topbar-right {
+    width: 100%;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 6px;
+  }
+
+  .args-input {
+    width: 100%;
+    flex: none;
+  }
+
+  .topbar-actions {
+    display: flex;
+    flex-wrap: nowrap;
+    gap: 6px;
+    width: 100%;
+  }
+
+  .topbar-actions .btn {
+    flex: 1 1 0;
+    padding: 8px 2px;
+    font-size: 12px;
+    justify-content: center;
+    min-width: 0;
+  }
+
+  .topbar-actions .btn-text {
+    display: none;
+  }
+
+  .topbar-actions .btn-glyph {
+    font-size: 15px;
+  }
+
+  .output-panel {
+    height: 34vh;
+    min-height: 100px;
+    max-height: 280px;
+  }
+
+  .output-header {
+    padding: 6px 10px;
+    gap: 6px;
+    flex-wrap: wrap;
+  }
+
+  .output-status {
+    flex-wrap: wrap;
+    gap: 4px;
+  }
+
+  .empty-state {
+    padding: 24px 16px;
+  }
+
+  .empty-state h2 {
+    font-size: 16px;
+  }
+
+  .empty-state p {
+    font-size: 12px;
+  }
+
+  .editor-panel .CodeMirror {
+    font-size: 13px;
+  }
+
+  .env-panel-header {
+    padding: 10px 12px;
+    gap: 8px;
+  }
+
+  .env-panel-header h2 {
+    font-size: 15px;
+    min-width: 0;
+  }
+
+  .env-tabs {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    padding: 0 8px;
+    scrollbar-width: none;
+  }
+
+  .env-tabs::-webkit-scrollbar {
+    display: none;
+  }
+
+  .env-tab {
+    padding: 8px 12px;
+    font-size: 12px;
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+
+  .env-panel-body {
+    padding: 12px;
+  }
+
+  .form-row {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .form-row .btn {
+    width: 100%;
+    justify-content: center;
+  }
+
+  .package-item {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 2px;
+  }
+
+  .toast {
+    left: 10px;
+    right: 10px;
+    bottom: max(10px, env(safe-area-inset-bottom));
+    text-align: center;
+  }
+}

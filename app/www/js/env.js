@@ -241,6 +241,17 @@
     return d.innerHTML;
   }
 
+  function setBtnEnvState(open) {
+    if (!els.btnEnv) return;
+    if (open) {
+      els.btnEnv.innerHTML = '<span class="btn-glyph">←</span><span class="btn-text">返回</span>';
+      els.btnEnv.title = "返回编辑";
+    } else {
+      els.btnEnv.innerHTML = '<span class="btn-glyph">⚙</span><span class="btn-text">环境</span>';
+      els.btnEnv.title = "环境设置";
+    }
+  }
+
   function openEnvPanel() {
     if (!els.envPanel || !els.mainArea) return;
     envPanelOpen = true;
@@ -249,7 +260,7 @@
     els.envPanel.hidden = false;
     els.envPanel.classList.add("is-visible");
     els.envPanel.style.display = "flex";
-    if (els.btnEnv) els.btnEnv.textContent = "← 返回编辑";
+    setBtnEnvState(true);
     loadEnvConfig()
       .catch(function () { return {}; })
       .then(function () { return loadPythonList(); })
@@ -268,7 +279,7 @@
     els.envPanel.classList.remove("is-visible");
     els.envPanel.style.display = "";
     els.envPanel.hidden = true;
-    if (els.btnEnv) els.btnEnv.textContent = "⚙ 环境";
+    setBtnEnvState(false);
     refreshRuntime();
   }
 

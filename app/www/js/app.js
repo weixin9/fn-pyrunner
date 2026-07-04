@@ -22,6 +22,7 @@
   let pollTimer = null;
   let lastStdoutLen = 0;
   let lastStderrLen = 0;
+  let outputExpandedHeight = 220;
 
   const els = {
     filePath: document.getElementById("filePath"),
@@ -39,6 +40,8 @@
     emptyState: document.getElementById("emptyState"),
     outputPanel: document.getElementById("outputPanel"),
     resizeHandle: document.getElementById("resizeHandle"),
+    btnToggleOutput: document.getElementById("btnToggleOutput"),
+    mainArea: document.getElementById("mainArea"),
     toast: document.getElementById("toast"),
   };
 
@@ -172,6 +175,42 @@
       .finally(function () { if (els.btnSave) els.btnSave.disabled = false; });
   }
 
+  function isOutputCollapsed() {
+    return els.mainArea && els.mainArea.classList.contains("output-collapsed");
+  }
+
+  function updateToggleOutputBtn(expanded) {
+    if (!els.btnToggleOutput) return;
+    const icon = els.btnToggleOutput.querySelector(".output-toggle-icon");
+    if (icon) icon.textContent = expanded ? "▼" : "▲";
+    els.btnToggleOutput.title = expanded ? "收起输出" : "展开输出";
+    els.btnToggleOutput.setAttribute("aria-expanded", expanded ? "true" : "false");
+  }
+
+  function expandOutputPanel() {
+    if (!els.outputPanel || !els.mainArea) return;
+    els.mainArea.classList.remove("output-collapsed");
+    if (outputExpandedHeight) {
+      els.outputPanel.style.height = outputExpandedHeight + "px";
+    }
+    updateToggleOutputBtn(true);
+  }
+
+  function collapseOutputPanel() {
+    if (!els.outputPanel || !els.mainArea) return;
+    if (!isOutputCollapsed()) {
+      outputExpandedHeight = els.outputPanel.offsetHeight || outputExpandedHeight;
+    }
+    els.mainArea.classList.add("output-collapsed");
+    els.outputPanel.style.height = "";
+    updateToggleOutputBtn(false);
+  }
+
+  function toggleOutputPanel() {
+    if (isOutputCollapsed()) expandOutputPanel();
+    else collapseOutputPanel();
+  }
+
   function clearOutput() {
     if (els.outputArea) els.outputArea.innerHTML = "";
   }
@@ -204,6 +243,7 @@
     }
 
     const doRun = function () {
+      expandOutputPanel();
       clearOutput();
       lastStdoutLen = 0;
       lastStderrLen = 0;
@@ -311,12 +351,14 @@
   function setupResize() {
     if (!els.resizeHandle || !els.outputPanel) return;
     els.resizeHandle.addEventListener("mousedown", function (e) {
+      if (isOutputCollapsed()) return;
       const startY = e.clientY;
       const startH = els.outputPanel.offsetHeight;
       function onMove(ev) {
         const delta = startY - ev.clientY;
         const newH = Math.max(80, Math.min(window.innerHeight * 0.6, startH + delta));
         els.outputPanel.style.height = newH + "px";
+        outputExpandedHeight = newH;
       }
       function onUp() {
         document.removeEventListener("mousemove", onMove);
@@ -331,6 +373,7 @@
     if (els.btnSave) els.btnSave.addEventListener("click", saveFile);
     if (els.btnRun) els.btnRun.addEventListener("click", runScript);
     if (els.btnStop) els.btnStop.addEventListener("click", stopScript);
+    if (els.btnToggleOutput) els.btnToggleOutput.addEventListener("click", toggleOutputPanel);
     setupResize();
 
     if (window.pyrunnerCommon) {
