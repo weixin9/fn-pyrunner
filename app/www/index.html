@@ -17,7 +17,7 @@
   <link rel="stylesheet" href="vendor/codemirror.min.css">
   <link rel="stylesheet" href="vendor/theme-dark.css">
   <link rel="stylesheet" href="vendor/theme-light.css">
-  <link rel="stylesheet" href="css/app.css?v=1.1.14">
+  <link rel="stylesheet" href="css/app.css?v=1.1.15">
 </head>
 <body>
   <div class="app-shell">
@@ -72,7 +72,12 @@
             </span>
           </div>
         </div>
-        <div class="output-area" id="outputArea"></div>
+        <div class="output-body">
+          <div class="output-area" id="outputArea"></div>
+          <form class="output-input-row" id="outputInputForm" hidden>
+            <input type="text" class="output-input" id="outputInput" autocomplete="off" spellcheck="false" enterkeyhint="send" placeholder="输入后按 Enter 发送给运行中的脚本…">
+          </form>
+        </div>
       </div>
     </div>
 
@@ -154,10 +159,10 @@
 
   <div class="toast" id="toast"></div>
 
-  <script src="js/common.js?v=1.1.14"></script>
+  <script src="js/common.js?v=1.1.15"></script>
   <script src="vendor/codemirror.min.js"></script>
   <script src="vendor/python.min.js"></script>
-  <script src="js/env.js?v=1.1.14"></script>
-  <script src="js/app.js?v=1.1.14"></script>
+  <script src="js/env.js?v=1.1.15"></script>
+  <script src="js/app.js?v=1.1.15"></script>
 </body>
 </html>

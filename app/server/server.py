@@ -5,6 +5,7 @@ import argparse
 import json
 import mimetypes
 import os
+import pty
 import shlex
 import socketserver
 import subprocess
@@ -76,47 +77,62 @@ def run_script(task_id, file_path, args_str, cwd_str):
 
     cwd = cwd_str if cwd_str else str(target.parent)
     proc_env = ENV_MANAGER.build_script_env(runtime)
+    proc_env["TERM"] = "xterm-256color"
 
     with EXEC_TASKS_LOCK:
         if task_id in EXEC_TASKS:
             EXEC_TASKS[task_id]["runtime"] = runtime
 
+    master_fd = None
+    proc = None
     try:
+        master_fd, slave_fd = pty.openpty()
         proc = subprocess.Popen(
             cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            stdin=slave_fd,
+            stdout=slave_fd,
+            stderr=slave_fd,
             cwd=cwd,
             env=proc_env,
+            close_fds=True,
         )
+        os.close(slave_fd)
+        slave_fd = None
 
         with EXEC_TASKS_LOCK:
             if task_id in EXEC_TASKS:
                 EXEC_TASKS[task_id]["proc"] = proc
+                EXEC_TASKS[task_id]["pty_master"] = master_fd
 
-        def _read_stream(stream, key):
+        def _read_pty():
             try:
-                for raw_line in iter(stream.readline, b""):
-                    line = raw_line.decode("utf-8", errors="replace")
+                while True:
+                    try:
+                        data = os.read(master_fd, 4096)
+                    except OSError:
+                        break
+                    if not data:
+                        break
+                    text = data.decode("utf-8", errors="replace")
                     with EXEC_TASKS_LOCK:
                         if task_id in EXEC_TASKS:
-                            EXEC_TASKS[task_id][key] += line
+                            EXEC_TASKS[task_id]["stdout"] += text
             except Exception:
                 pass
             finally:
                 try:
-                    stream.close()
-                except Exception:
+                    os.close(master_fd)
+                except OSError:
                     pass
+                with EXEC_TASKS_LOCK:
+                    if task_id in EXEC_TASKS:
+                        EXEC_TASKS[task_id]["pty_master"] = None
 
-        t_out = threading.Thread(target=_read_stream, args=(proc.stdout, "stdout"), daemon=True)
-        t_err = threading.Thread(target=_read_stream, args=(proc.stderr, "stderr"), daemon=True)
+        t_out = threading.Thread(target=_read_pty, daemon=True)
         t_out.start()
-        t_err.start()
 
         proc.wait(timeout=EXEC_TIMEOUT)
         t_out.join(timeout=5)
-        t_err.join(timeout=5)
         exit_code = proc.returncode
 
         with EXEC_TASKS_LOCK:
@@ -125,8 +141,9 @@ def run_script(task_id, file_path, args_str, cwd_str):
                 EXEC_TASKS[task_id]["exit_code"] = exit_code
                 EXEC_TASKS[task_id]["finished_at"] = datetime.now().isoformat()
     except subprocess.TimeoutExpired:
-        proc.kill()
-        proc.wait(timeout=5)
+        if proc:
+            proc.kill()
+            proc.wait(timeout=5)
         with EXEC_TASKS_LOCK:
             if task_id in EXEC_TASKS:
                 EXEC_TASKS[task_id]["status"] = "timeout"
@@ -140,6 +157,10 @@ def run_script(task_id, file_path, args_str, cwd_str):
                 EXEC_TASKS[task_id]["exit_code"] = -1
                 EXEC_TASKS[task_id]["stderr"] += str(exc)
                 EXEC_TASKS[task_id]["finished_at"] = datetime.now().isoformat()
+    finally:
+        with EXEC_TASKS_LOCK:
+            if task_id in EXEC_TASKS:
+                EXEC_TASKS[task_id]["pty_master"] = None
 
 
 def run_bg_command(task_id, cmd, cwd=None, env=None):
@@ -538,6 +559,7 @@ class Handler(BaseHTTPRequestHandler):
             "stdout": "",
             "stderr": "",
             "proc": None,
+            "pty_master": None,
             "created_at": datetime.now().isoformat(),
             "started_at": None,
             "finished_at": None,
@@ -566,6 +588,44 @@ class Handler(BaseHTTPRequestHandler):
         task_id = parts[3]
         action = parts[4] if len(parts) > 4 else None
 
+        if action == "stdin" and self.command == "POST":
+            try:
+                data = self.read_json_body()
+            except (ValueError, json.JSONDecodeError) as exc:
+                self.send_json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+                return
+
+            line = data.get("line", data.get("input", ""))
+            if line is None:
+                line = ""
+            if not isinstance(line, str):
+                self.send_json(HTTPStatus.BAD_REQUEST, {"error": "line must be a string"})
+                return
+            if line and not line.endswith("\n"):
+                line += "\n"
+
+            with EXEC_TASKS_LOCK:
+                task = EXEC_TASKS.get(task_id)
+                if not task:
+                    self.send_json(HTTPStatus.NOT_FOUND, {"error": "Task not found"})
+                    return
+                if task.get("type") != "script" or task.get("status") != "running":
+                    self.send_json(HTTPStatus.BAD_REQUEST, {"error": "Task not accepting input"})
+                    return
+                master = task.get("pty_master")
+                if master is None:
+                    self.send_json(HTTPStatus.BAD_REQUEST, {"error": "Interactive input unavailable"})
+                    return
+
+            try:
+                os.write(master, line.encode("utf-8"))
+            except OSError as exc:
+                self.send_json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+                return
+
+            self.send_json(HTTPStatus.OK, {"ok": True})
+            return
+
         with EXEC_TASKS_LOCK:
             task = EXEC_TASKS.get(task_id)
             if not task:
@@ -574,6 +634,13 @@ class Handler(BaseHTTPRequestHandler):
 
             if action == "stop" and self.command == "POST" and task["status"] == "running":
                 proc = task.get("proc")
+                master = task.get("pty_master")
+                if master is not None:
+                    try:
+                        os.close(master)
+                    except OSError:
+                        pass
+                    task["pty_master"] = None
                 if proc and proc.poll() is None:
                     try:
                         proc.terminate()
@@ -588,7 +655,12 @@ class Handler(BaseHTTPRequestHandler):
                     task["stderr"] += "\n[Process killed by user]"
                     task["finished_at"] = datetime.now().isoformat()
 
-            resp = {k: task[k] for k in task if k != "proc"}
+            resp = {k: task[k] for k in task if k not in ("proc", "pty_master")}
+            resp["interactive"] = (
+                task.get("type") == "script"
+                and task.get("status") == "running"
+                and task.get("pty_master") is not None
+            )
 
         self.send_json(HTTPStatus.OK, resp)
 

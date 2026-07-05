@@ -23,6 +23,7 @@
   let lastStdoutLen = 0;
   let lastStderrLen = 0;
   let outputExpandedHeight = 220;
+  let outputStreamEl = null;
 
   const els = {
     filePath: document.getElementById("filePath"),
@@ -32,6 +33,8 @@
     btnStop: document.getElementById("btnStop"),
     argsInput: document.getElementById("argsInput"),
     outputArea: document.getElementById("outputArea"),
+    outputInputForm: document.getElementById("outputInputForm"),
+    outputInput: document.getElementById("outputInput"),
     statusDot: document.getElementById("statusDot"),
     statusText: document.getElementById("statusText"),
     exitCodeDisplay: document.getElementById("exitCodeDisplay"),
@@ -212,7 +215,26 @@
   }
 
   function clearOutput() {
+    outputStreamEl = null;
     if (els.outputArea) els.outputArea.innerHTML = "";
+  }
+
+  function ensureOutputStream() {
+    if (!els.outputArea) return null;
+    if (!outputStreamEl) {
+      outputStreamEl = document.createElement("pre");
+      outputStreamEl.className = "output-stream";
+      els.outputArea.appendChild(outputStreamEl);
+    }
+    return outputStreamEl;
+  }
+
+  function appendStream(text) {
+    if (!text) return;
+    const stream = ensureOutputStream();
+    if (!stream) return;
+    stream.textContent += text;
+    els.outputArea.scrollTop = els.outputArea.scrollHeight;
   }
 
   function addLine(text, cls) {
@@ -229,11 +251,54 @@
     if (els.statusText) els.statusText.textContent = text;
   }
 
+  function setInteractiveInput(enabled) {
+    if (!els.outputInputForm) return;
+    els.outputInputForm.hidden = !enabled;
+    if (enabled && els.outputInput) {
+      setTimeout(function () { els.outputInput.focus(); }, 0);
+    } else if (els.outputInput) {
+      els.outputInput.value = "";
+    }
+  }
+
+  function sendStdin(line) {
+    if (!currentTaskId) return Promise.reject(new Error("无运行中的任务"));
+    return apiFetch("/task/" + currentTaskId + "/stdin", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ line: line }),
+    }).then(function (r) {
+      if (!r.ok) {
+        return r.json().then(function (e) {
+          return Promise.reject(new Error(e.error || "HTTP " + r.status));
+        });
+      }
+      return r.json();
+    });
+  }
+
+  function submitOutputInput() {
+    if (!els.outputInput || !currentTaskId) return;
+    const line = els.outputInput.value;
+    if (line === "") {
+      sendStdin("\n").catch(function (err) {
+        showToast("发送输入失败: " + err.message, "error");
+      });
+    } else {
+      sendStdin(line).catch(function (err) {
+        showToast("发送输入失败: " + err.message, "error");
+      });
+    }
+    els.outputInput.value = "";
+    els.outputInput.focus();
+  }
+
   function setRunning(running) {
     if (els.btnRun) els.btnRun.disabled = running;
     if (els.btnStop) els.btnStop.disabled = !running;
     if (els.argsInput) els.argsInput.disabled = running;
     if (editor) editor.setOption("readOnly", running);
+    if (!running) setInteractiveInput(false);
   }
 
   function runScript() {
@@ -252,10 +317,10 @@
       const py = runtime.python_path || "python3";
       addLine("$ " + py + " " + currentPath + (args ? " " + args : ""), "info");
       if (runtime.mode === "venv") addLine("# venv: " + runtime.venv_path, "info");
-      addLine("", "stdout");
 
       setStatus("running", "运行中...");
       setRunning(true);
+      setInteractiveInput(true);
       if (els.exitCodeDisplay) els.exitCodeDisplay.style.display = "none";
 
       const url = "/execute?path=" + encodeURIComponent(currentPath) +
@@ -298,20 +363,17 @@
     api("/task/" + taskId)
       .then(function (data) {
         if (data.stdout && data.stdout.length > lastStdoutLen) {
-          const newOut = data.stdout.substring(lastStdoutLen);
+          appendStream(data.stdout.substring(lastStdoutLen));
           lastStdoutLen = data.stdout.length;
-          newOut.split("\n").forEach(function (line, i, arr) {
-            if (i < arr.length - 1 || newOut.endsWith("\n")) addLine(line, "stdout");
-            else if (line) addLine(line, "stdout");
-          });
         }
         if (data.stderr && data.stderr.length > lastStderrLen) {
           const newErr = data.stderr.substring(lastStderrLen);
           lastStderrLen = data.stderr.length;
-          newErr.split("\n").forEach(function (line, i, arr) {
-            if (i < arr.length - 1 || newErr.endsWith("\n")) addLine(line, "stderr");
-            else if (line) addLine(line, "stderr");
-          });
+          appendStream(newErr);
+        }
+
+        if (data.interactive || data.status === "running") {
+          setInteractiveInput(true);
         }
 
         if (data.status === "running" || data.status === "pending") return;
@@ -374,6 +436,12 @@
     if (els.btnRun) els.btnRun.addEventListener("click", runScript);
     if (els.btnStop) els.btnStop.addEventListener("click", stopScript);
     if (els.btnToggleOutput) els.btnToggleOutput.addEventListener("click", toggleOutputPanel);
+    if (els.outputInputForm) {
+      els.outputInputForm.addEventListener("submit", function (e) {
+        e.preventDefault();
+        submitOutputInput();
+      });
+    }
     setupResize();
 
     if (window.pyrunnerCommon) {
