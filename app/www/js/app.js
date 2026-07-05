@@ -14,6 +14,23 @@
     });
   }
 
+  const TERMINAL_STATUS_LABEL = {
+    running: "●",
+    done: "✓",
+    killed: "■",
+    error: "✗",
+    interrupted: "!",
+    pending: "…",
+  };
+
+  const FINISHED_STATUS_MAP = {
+    done: ["done", "完成"],
+    error: ["error", "错误"],
+    timeout: ["error", "超时"],
+    killed: ["error", "已终止"],
+    interrupted: ["error", "已中断"],
+  };
+
   let editor = null;
   let currentPath = "";
   let savedContent = "";
@@ -24,12 +41,23 @@
   let lastStderrLen = 0;
   let outputExpandedHeight = 220;
   let outputStreamEl = null;
+  let streamRawText = "";
+
+  let displayMode = "idle";
+  let currentTerminalId = null;
+  let terminalPollTimer = null;
+  let terminalLogOffset = 0;
+  let terminalList = [];
+  let terminalListTimer = null;
+  let terminalSelectLocked = false;
+  let terminalSelectPendingSync = false;
 
   const els = {
     filePath: document.getElementById("filePath"),
     unsavedDot: document.getElementById("unsavedDot"),
     btnSave: document.getElementById("btnSave"),
     btnRun: document.getElementById("btnRun"),
+    btnRunBackground: document.getElementById("btnRunBackground"),
     btnStop: document.getElementById("btnStop"),
     argsInput: document.getElementById("argsInput"),
     outputArea: document.getElementById("outputArea"),
@@ -46,6 +74,8 @@
     btnToggleOutput: document.getElementById("btnToggleOutput"),
     mainArea: document.getElementById("mainArea"),
     toast: document.getElementById("toast"),
+    terminalSelect: document.getElementById("terminalSelect"),
+    btnDeleteTerminal: document.getElementById("btnDeleteTerminal"),
   };
 
   function detectTheme() {
@@ -178,6 +208,19 @@
       .finally(function () { if (els.btnSave) els.btnSave.disabled = false; });
   }
 
+  function saveBeforeRun() {
+    if (!isDirty) return Promise.resolve();
+    const content = editor.getValue();
+    return api("/file", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path: currentPath, content: content }),
+    }).then(function () {
+      savedContent = content;
+      setDirty(false);
+    });
+  }
+
   function isOutputCollapsed() {
     return els.mainArea && els.mainArea.classList.contains("output-collapsed");
   }
@@ -216,6 +259,7 @@
 
   function clearOutput() {
     outputStreamEl = null;
+    streamRawText = "";
     if (els.outputArea) els.outputArea.innerHTML = "";
   }
 
@@ -229,12 +273,21 @@
     return outputStreamEl;
   }
 
-  function appendStream(text) {
-    if (!text) return;
+  function renderOutputStream() {
     const stream = ensureOutputStream();
     if (!stream) return;
-    stream.textContent += text;
+    if (window.pyrunnerAnsi) {
+      stream.innerHTML = window.pyrunnerAnsi.toHtml(streamRawText);
+    } else {
+      stream.textContent = streamRawText;
+    }
     els.outputArea.scrollTop = els.outputArea.scrollHeight;
+  }
+
+  function appendStream(text) {
+    if (!text) return;
+    streamRawText += text;
+    renderOutputStream();
   }
 
   function addLine(text, cls) {
@@ -247,21 +300,67 @@
   }
 
   function setStatus(status, text) {
+    if (displayMode === "terminal" && terminalPollTimer && status === "idle") return;
     if (els.statusDot) els.statusDot.className = "status-dot " + status;
     if (els.statusText) els.statusText.textContent = text;
   }
 
   function setInteractiveInput(enabled) {
+    if (displayMode === "foreground" && !currentTaskId) {
+      if (els.outputInputForm) els.outputInputForm.hidden = true;
+      return;
+    }
+    if (displayMode === "terminal" && !currentTerminalId) {
+      if (els.outputInputForm) els.outputInputForm.hidden = true;
+      return;
+    }
     if (!els.outputInputForm) return;
+    const wasVisible = !els.outputInputForm.hidden;
     els.outputInputForm.hidden = !enabled;
-    if (enabled && els.outputInput) {
-      setTimeout(function () { els.outputInput.focus(); }, 0);
-    } else if (els.outputInput) {
+    if (enabled && els.outputInput && !wasVisible && !terminalSelectLocked) {
+      setTimeout(function () {
+        if (!terminalSelectLocked) els.outputInput.focus();
+      }, 0);
+    } else if (!enabled && els.outputInput) {
       els.outputInput.value = "";
     }
   }
 
+  function getTerminalMeta(terminalId) {
+    return terminalList.find(function (t) { return t.id === terminalId; });
+  }
+
+  function isForegroundRunning() {
+    return !!currentTaskId && !!pollTimer;
+  }
+
+  function isViewedTerminalRunning() {
+    if (displayMode !== "terminal" || !currentTerminalId) return false;
+    const meta = getTerminalMeta(currentTerminalId);
+    return !!(meta && meta.status === "running");
+  }
+
+  function updateStopButton() {
+    if (!els.btnStop) return;
+    els.btnStop.disabled = !(isForegroundRunning() || isViewedTerminalRunning());
+  }
+
+  function setForegroundRunning(running) {
+    if (els.btnRun) els.btnRun.disabled = running;
+    if (els.argsInput) els.argsInput.disabled = running;
+    if (editor) editor.setOption("readOnly", running);
+    if (!running && displayMode === "foreground") setInteractiveInput(false);
+    updateStopButton();
+  }
+
   function sendStdin(line) {
+    if (displayMode === "terminal" && currentTerminalId) {
+      return api("/terminals/" + currentTerminalId + "/stdin", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ line: line }),
+      });
+    }
     if (!currentTaskId) return Promise.reject(new Error("无运行中的任务"));
     return apiFetch("/task/" + currentTaskId + "/stdin", {
       method: "POST",
@@ -278,27 +377,235 @@
   }
 
   function submitOutputInput() {
-    if (!els.outputInput || !currentTaskId) return;
+    const canSend = (displayMode === "terminal" && currentTerminalId) ||
+      (displayMode === "foreground" && currentTaskId);
+    if (!els.outputInput || !canSend) return;
     const line = els.outputInput.value;
-    if (line === "") {
-      sendStdin("\n").catch(function (err) {
-        showToast("发送输入失败: " + err.message, "error");
-      });
-    } else {
-      sendStdin(line).catch(function (err) {
-        showToast("发送输入失败: " + err.message, "error");
-      });
-    }
+    const promise = line === "" ? sendStdin("\n") : sendStdin(line);
+    promise.catch(function (err) {
+      showToast("发送输入失败: " + err.message, "error");
+    });
     els.outputInput.value = "";
     els.outputInput.focus();
   }
 
-  function setRunning(running) {
-    if (els.btnRun) els.btnRun.disabled = running;
-    if (els.btnStop) els.btnStop.disabled = !running;
-    if (els.argsInput) els.argsInput.disabled = running;
-    if (editor) editor.setOption("readOnly", running);
-    if (!running) setInteractiveInput(false);
+  function terminalOptionLabel(t) {
+    const icon = TERMINAL_STATUS_LABEL[t.status] || "?";
+    const suffix = t.status === "running" ? " (运行中)" : "";
+    return icon + " " + (t.title || t.script_path || t.id) + suffix;
+  }
+
+  function requestTerminalSelectSync(selectId) {
+    if (terminalSelectLocked) {
+      terminalSelectPendingSync = true;
+      return;
+    }
+    renderTerminalSelect(selectId);
+  }
+
+  function unlockTerminalSelect() {
+    terminalSelectLocked = false;
+    if (terminalSelectPendingSync) {
+      terminalSelectPendingSync = false;
+      renderTerminalSelect(displayMode === "terminal" ? currentTerminalId : undefined);
+    }
+  }
+
+  function renderTerminalSelect(selectId) {
+    if (!els.terminalSelect) return;
+    const sel = els.terminalSelect;
+    const prev = selectId !== undefined ? selectId : sel.value;
+
+    let defaultOpt = sel.querySelector('option[value=""]');
+    if (!defaultOpt) {
+      defaultOpt = document.createElement("option");
+      defaultOpt.value = "";
+      defaultOpt.textContent = "前台输出";
+      sel.insertBefore(defaultOpt, sel.firstChild);
+    }
+
+    const seen = new Set([""]);
+    terminalList.forEach(function (t) {
+      seen.add(t.id);
+      let opt = Array.from(sel.options).find(function (o) { return o.value === t.id; });
+      const label = terminalOptionLabel(t);
+      if (!opt) {
+        opt = document.createElement("option");
+        opt.value = t.id;
+        opt.textContent = label;
+        sel.appendChild(opt);
+      } else if (opt.textContent !== label) {
+        opt.textContent = label;
+      }
+    });
+
+    Array.from(sel.options).forEach(function (opt) {
+      if (opt.value && !seen.has(opt.value)) opt.remove();
+    });
+
+    if (prev && Array.from(sel.options).some(function (o) { return o.value === prev; })) {
+      if (sel.value !== prev) sel.value = prev;
+    }
+  }
+
+  function setupTerminalSelectInteraction() {
+    const sel = els.terminalSelect;
+    if (!sel) return;
+
+    function lockSelect() {
+      terminalSelectLocked = true;
+    }
+
+    sel.addEventListener("pointerdown", lockSelect);
+    sel.addEventListener("mousedown", lockSelect);
+    sel.addEventListener("focus", lockSelect);
+    sel.addEventListener("keydown", function (e) {
+      if (e.key === " " || e.key === "Enter" || e.key === "ArrowDown" || e.key === "ArrowUp") {
+        lockSelect();
+      }
+    });
+    sel.addEventListener("keyup", function (e) {
+      if (e.key === "Escape") setTimeout(unlockTerminalSelect, 0);
+    });
+    sel.addEventListener("blur", function () {
+      setTimeout(unlockTerminalSelect, 0);
+    });
+    sel.addEventListener("change", function () {
+      terminalSelectLocked = false;
+      terminalSelectPendingSync = false;
+      onTerminalSelectChange();
+      setTimeout(function () {
+        renderTerminalSelect(displayMode === "terminal" ? currentTerminalId : undefined);
+      }, 0);
+    });
+  }
+
+  function updateDeleteButton() {
+    if (!els.btnDeleteTerminal) return;
+    const meta = currentTerminalId ? getTerminalMeta(currentTerminalId) : null;
+    const canDelete = displayMode === "terminal" && meta && meta.status !== "running";
+    els.btnDeleteTerminal.hidden = !canDelete;
+  }
+
+  function refreshTerminalList(selectId) {
+    return api("/terminals").then(function (data) {
+      terminalList = data.terminals || [];
+      requestTerminalSelectSync(selectId);
+      updateDeleteButton();
+      updateStopButton();
+    }).catch(function () { /* ignore */ });
+  }
+
+  function applyFinishedStatus(data) {
+    const code = data.exit_code;
+    if (els.exitCodeDisplay) els.exitCodeDisplay.style.display = "";
+    if (els.exitCodeValue) {
+      els.exitCodeValue.textContent = code;
+      els.exitCodeValue.className = "exit-code " + (code === 0 ? "success" : "fail");
+    }
+    const mapped = FINISHED_STATUS_MAP[data.status] || ["done", data.status];
+    setStatus(mapped[0], mapped[1]);
+  }
+
+  function switchToForegroundView() {
+    if (terminalPollTimer) {
+      clearInterval(terminalPollTimer);
+      terminalPollTimer = null;
+    }
+    displayMode = currentTaskId ? "foreground" : "idle";
+    currentTerminalId = null;
+    try { sessionStorage.removeItem("pyrunner_last_terminal"); } catch (e) { /* ignore */ }
+    if (els.terminalSelect) els.terminalSelect.value = "";
+
+    clearOutput();
+    lastStdoutLen = 0;
+    lastStderrLen = 0;
+
+    if (currentTaskId) {
+      pollTask(currentTaskId);
+      if (!pollTimer) {
+        pollTimer = setInterval(function () { pollTask(currentTaskId); }, 400);
+      }
+      setForegroundRunning(true);
+    } else {
+      setStatus("idle", "就绪");
+      if (els.exitCodeDisplay) els.exitCodeDisplay.style.display = "none";
+      setInteractiveInput(false);
+    }
+    updateDeleteButton();
+    updateStopButton();
+  }
+
+  function switchToTerminalView(terminalId) {
+    if (!terminalId) {
+      switchToForegroundView();
+      return;
+    }
+
+    displayMode = "terminal";
+    currentTerminalId = terminalId;
+    terminalLogOffset = 0;
+    try { sessionStorage.setItem("pyrunner_last_terminal", terminalId); } catch (e) { /* ignore */ }
+
+    if (els.terminalSelect) els.terminalSelect.value = terminalId;
+
+    clearOutput();
+    expandOutputPanel();
+
+    if (terminalPollTimer) clearInterval(terminalPollTimer);
+    pollTerminal(terminalId);
+    terminalPollTimer = setInterval(function () { pollTerminal(terminalId); }, 500);
+
+    updateDeleteButton();
+    updateStopButton();
+  }
+
+  function pollTerminal(terminalId) {
+    api("/terminals/" + terminalId + "?offset=" + terminalLogOffset)
+      .then(function (data) {
+        if (displayMode !== "terminal" || currentTerminalId !== terminalId) return;
+
+        if (data.output) {
+          appendStream(data.output);
+        }
+        terminalLogOffset = data.log_size != null ? data.log_size : terminalLogOffset;
+
+        const idx = terminalList.findIndex(function (t) { return t.id === terminalId; });
+        if (idx >= 0) {
+          terminalList[idx] = Object.assign({}, terminalList[idx], {
+            status: data.status,
+            exit_code: data.exit_code,
+            log_size: data.log_size,
+            interactive: data.interactive,
+          });
+        } else {
+          terminalList.push(data);
+        }
+
+        if (data.status === "running" || data.status === "pending") {
+          setStatus("running", "运行中...");
+          if (els.exitCodeDisplay) els.exitCodeDisplay.style.display = "none";
+          setInteractiveInput(!!data.interactive);
+          updateStopButton();
+          return;
+        }
+
+        if (terminalPollTimer) {
+          clearInterval(terminalPollTimer);
+          terminalPollTimer = null;
+        }
+        setInteractiveInput(false);
+        applyFinishedStatus(data);
+        requestTerminalSelectSync(terminalId);
+        updateDeleteButton();
+        updateStopButton();
+      })
+      .catch(function () {
+        if (displayMode === "terminal" && currentTerminalId === terminalId && terminalPollTimer) {
+          clearInterval(terminalPollTimer);
+          terminalPollTimer = null;
+        }
+      });
   }
 
   function runScript() {
@@ -307,107 +614,173 @@
       return;
     }
 
-    const doRun = function () {
-      expandOutputPanel();
-      clearOutput();
-      lastStdoutLen = 0;
-      lastStderrLen = 0;
-      const args = els.argsInput ? els.argsInput.value : "";
-      const runtime = window.pyrunnerEnv ? window.pyrunnerEnv.getRuntime() : {};
-      const py = runtime.python_path || "python3";
-      addLine("$ " + py + " " + currentPath + (args ? " " + args : ""), "info");
-      if (runtime.mode === "venv") addLine("# venv: " + runtime.venv_path, "info");
+    saveBeforeRun()
+      .then(function () {
+        expandOutputPanel();
+        switchToForegroundView();
+        clearOutput();
+        lastStdoutLen = 0;
+        lastStderrLen = 0;
+        const args = els.argsInput ? els.argsInput.value : "";
+        const runtime = window.pyrunnerEnv ? window.pyrunnerEnv.getRuntime() : {};
+        const py = runtime.python_path || "python3";
+        addLine("$ " + py + " " + currentPath + (args ? " " + args : ""), "info");
+        if (runtime.mode === "venv") addLine("# venv: " + runtime.venv_path, "info");
 
-      setStatus("running", "运行中...");
-      setRunning(true);
-      setInteractiveInput(true);
-      if (els.exitCodeDisplay) els.exitCodeDisplay.style.display = "none";
+        setStatus("running", "运行中...");
+        setForegroundRunning(true);
+        setInteractiveInput(true);
+        if (els.exitCodeDisplay) els.exitCodeDisplay.style.display = "none";
 
-      const url = "/execute?path=" + encodeURIComponent(currentPath) +
-        "&args=" + encodeURIComponent(args);
+        const url = "/execute?path=" + encodeURIComponent(currentPath) +
+          "&args=" + encodeURIComponent(args);
 
-      api(url)
-        .then(function (data) {
-          currentTaskId = data.task_id;
-          pollTimer = setInterval(function () { pollTask(currentTaskId); }, 400);
-        })
-        .catch(function (err) {
-          addLine("启动失败: " + err.message, "error");
-          setStatus("error", "失败");
-          setRunning(false);
-        });
-    };
+        return api(url);
+      })
+      .then(function (data) {
+        if (!data) return;
+        currentTaskId = data.task_id;
+        displayMode = "foreground";
+        pollTimer = setInterval(function () { pollTask(currentTaskId); }, 400);
+        updateStopButton();
+      })
+      .catch(function (err) {
+        addLine("启动失败: " + err.message, "error");
+        setStatus("error", "失败");
+        setForegroundRunning(false);
+        currentTaskId = null;
+      });
+  }
 
-    if (!isDirty) {
-      doRun();
+  function runScriptBackground() {
+    if (!currentPath) {
+      showToast("未打开文件，无法运行", "error");
       return;
     }
 
-    const content = editor.getValue();
-    api("/file", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ path: currentPath, content: content }),
-    })
+    saveBeforeRun()
       .then(function () {
-        savedContent = content;
-        setDirty(false);
-        doRun();
+        const args = els.argsInput ? els.argsInput.value : "";
+        return api("/terminals/run", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ script_path: currentPath, args: args }),
+        });
+      })
+      .then(function (term) {
+        if (!term) return;
+        showToast("已在后台启动: " + (term.title || term.id), "success");
+        return refreshTerminalList(term.id).then(function () {
+          switchToTerminalView(term.id);
+        });
       })
       .catch(function (err) {
-        showToast("自动保存失败: " + err.message, "error");
+        showToast("后台启动失败: " + err.message, "error");
       });
   }
 
   function pollTask(taskId) {
     api("/task/" + taskId)
       .then(function (data) {
-        if (data.stdout && data.stdout.length > lastStdoutLen) {
-          appendStream(data.stdout.substring(lastStdoutLen));
-          lastStdoutLen = data.stdout.length;
-        }
-        if (data.stderr && data.stderr.length > lastStderrLen) {
-          const newErr = data.stderr.substring(lastStderrLen);
-          lastStderrLen = data.stderr.length;
-          appendStream(newErr);
+        const showUi = displayMode === "foreground" && currentTaskId === taskId;
+
+        if (showUi) {
+          if (data.stdout && data.stdout.length > lastStdoutLen) {
+            appendStream(data.stdout.substring(lastStdoutLen));
+            lastStdoutLen = data.stdout.length;
+          }
+          if (data.stderr && data.stderr.length > lastStderrLen) {
+            appendStream(data.stderr.substring(lastStderrLen));
+            lastStderrLen = data.stderr.length;
+          }
+          if (data.interactive || data.status === "running") {
+            setInteractiveInput(true);
+          }
         }
 
-        if (data.interactive || data.status === "running") {
-          setInteractiveInput(true);
+        if (data.status === "running" || data.status === "pending") {
+          updateStopButton();
+          return;
         }
-
-        if (data.status === "running" || data.status === "pending") return;
 
         clearInterval(pollTimer);
         pollTimer = null;
-        setRunning(false);
+        currentTaskId = null;
+        setForegroundRunning(false);
 
-        const code = data.exit_code;
-        if (els.exitCodeDisplay) els.exitCodeDisplay.style.display = "";
-        if (els.exitCodeValue) {
-          els.exitCodeValue.textContent = code;
-          els.exitCodeValue.className = "exit-code " + (code === 0 ? "success" : "fail");
+        if (showUi) {
+          setInteractiveInput(false);
+          applyFinishedStatus(data);
         }
-
-        const statusMap = {
-          done: ["done", "完成"],
-          error: ["error", "错误"],
-          timeout: ["error", "超时"],
-          killed: ["error", "已终止"],
-        };
-        const mapped = statusMap[data.status] || ["done", data.status];
-        setStatus(mapped[0], mapped[1]);
+        updateStopButton();
       })
       .catch(function () {
         clearInterval(pollTimer);
-        setRunning(false);
-        setStatus("error", "失败");
+        pollTimer = null;
+        currentTaskId = null;
+        setForegroundRunning(false);
+        if (displayMode === "foreground") setStatus("error", "失败");
+        updateStopButton();
       });
   }
 
   function stopScript() {
+    if (displayMode === "terminal" && currentTerminalId && isViewedTerminalRunning()) {
+      api("/terminals/" + currentTerminalId + "/stop", { method: "POST" })
+        .then(function () {
+          pollTerminal(currentTerminalId);
+          refreshTerminalList(currentTerminalId);
+        })
+        .catch(function (err) {
+          showToast("停止失败: " + err.message, "error");
+        });
+      return;
+    }
     if (!currentTaskId) return;
     apiFetch("/task/" + currentTaskId + "/stop", { method: "POST" }).catch(function () { /* ignore */ });
+  }
+
+  function deleteCurrentTerminal() {
+    if (!currentTerminalId) return;
+    const id = currentTerminalId;
+    api("/terminals/" + id, { method: "DELETE" })
+      .then(function () {
+        showToast("终端已删除", "success");
+        if (terminalPollTimer) {
+          clearInterval(terminalPollTimer);
+          terminalPollTimer = null;
+        }
+        currentTerminalId = null;
+        displayMode = "idle";
+        clearOutput();
+        setStatus("idle", "就绪");
+        if (els.exitCodeDisplay) els.exitCodeDisplay.style.display = "none";
+        setInteractiveInput(false);
+        try { sessionStorage.removeItem("pyrunner_last_terminal"); } catch (e) { /* ignore */ }
+        return refreshTerminalList("");
+      })
+      .catch(function (err) {
+        showToast("删除失败: " + err.message, "error");
+      });
+  }
+
+  function onTerminalSelectChange() {
+    const val = els.terminalSelect ? els.terminalSelect.value : "";
+    if (!val) switchToForegroundView();
+    else switchToTerminalView(val);
+  }
+
+  function restoreTerminalView() {
+    let last = "";
+    try { last = sessionStorage.getItem("pyrunner_last_terminal") || ""; } catch (e) { /* ignore */ }
+    if (last && terminalList.some(function (t) { return t.id === last; })) {
+      switchToTerminalView(last);
+      return;
+    }
+    const running = terminalList.find(function (t) { return t.status === "running"; });
+    if (running) {
+      switchToTerminalView(running.id);
+    }
   }
 
   function setupResize() {
@@ -434,8 +807,11 @@
   function initApp() {
     if (els.btnSave) els.btnSave.addEventListener("click", saveFile);
     if (els.btnRun) els.btnRun.addEventListener("click", runScript);
+    if (els.btnRunBackground) els.btnRunBackground.addEventListener("click", runScriptBackground);
     if (els.btnStop) els.btnStop.addEventListener("click", stopScript);
     if (els.btnToggleOutput) els.btnToggleOutput.addEventListener("click", toggleOutputPanel);
+    setupTerminalSelectInteraction();
+    if (els.btnDeleteTerminal) els.btnDeleteTerminal.addEventListener("click", deleteCurrentTerminal);
     if (els.outputInputForm) {
       els.outputInputForm.addEventListener("submit", function (e) {
         e.preventDefault();
@@ -443,6 +819,11 @@
       });
     }
     setupResize();
+
+    refreshTerminalList().then(restoreTerminalView);
+    terminalListTimer = setInterval(function () {
+      refreshTerminalList(displayMode === "terminal" ? currentTerminalId : undefined);
+    }, 8000);
 
     if (window.pyrunnerCommon) {
       window.pyrunnerCommon.watchFilePath(setCurrentPath);

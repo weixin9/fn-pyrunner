@@ -17,7 +17,7 @@
   <link rel="stylesheet" href="vendor/codemirror.min.css">
   <link rel="stylesheet" href="vendor/theme-dark.css">
   <link rel="stylesheet" href="vendor/theme-light.css">
-  <link rel="stylesheet" href="css/app.css?v=1.1.15">
+  <link rel="stylesheet" href="css/app.css?v=1.1.19">
 </head>
 <body>
   <div class="app-shell">
@@ -41,6 +41,9 @@
           <button class="btn btn-primary btn-run btn-icon-text" id="btnRun" title="运行 (F5)" type="button">
             <span class="btn-glyph icon">▶</span><span class="btn-text">运行</span>
           </button>
+          <button class="btn btn-icon-text" id="btnRunBackground" title="后台运行（无超时，关闭页面后可恢复）" type="button">
+            <span class="btn-glyph">⧉</span><span class="btn-text">后台</span>
+          </button>
           <button class="btn btn-danger btn-icon-text" id="btnStop" disabled title="停止运行" type="button">
             <span class="btn-glyph">■</span><span class="btn-text">停止</span>
           </button>
@@ -60,10 +63,19 @@
 
       <div class="output-panel" id="outputPanel">
         <div class="output-header">
-          <button class="output-header-left" id="btnToggleOutput" type="button" title="收起输出" aria-expanded="true">
-            <span class="output-title">输出</span>
-            <span class="output-toggle-icon" aria-hidden="true">▼</span>
-          </button>
+          <div class="output-header-start">
+            <button class="output-header-left" id="btnToggleOutput" type="button" title="收起输出" aria-expanded="true">
+              <span class="output-title">输出</span>
+              <span class="output-toggle-icon" aria-hidden="true">▼</span>
+            </button>
+            <div class="terminal-selector" id="terminalSelector">
+              <label class="terminal-selector-label" for="terminalSelect">终端</label>
+              <select class="terminal-select" id="terminalSelect" title="切换终端会话">
+                <option value="">前台输出</option>
+              </select>
+              <button class="btn btn-sm btn-delete-terminal" id="btnDeleteTerminal" type="button" title="删除此终端" hidden>删除</button>
+            </div>
+          </div>
           <div class="output-status">
             <span class="status-dot" id="statusDot"></span>
             <span id="statusText">就绪</span>
@@ -159,10 +171,11 @@
 
   <div class="toast" id="toast"></div>
 
-  <script src="js/common.js?v=1.1.15"></script>
+  <script src="js/common.js?v=1.1.19"></script>
+  <script src="js/ansi.js?v=1.1.19"></script>
   <script src="vendor/codemirror.min.js"></script>
   <script src="vendor/python.min.js"></script>
-  <script src="js/env.js?v=1.1.15"></script>
-  <script src="js/app.js?v=1.1.15"></script>
+  <script src="js/env.js?v=1.1.19"></script>
+  <script src="js/app.js?v=1.1.19"></script>
 </body>
 </html>

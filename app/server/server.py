@@ -19,6 +19,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlsplit
 
 from env_manager import EnvManager
+from terminal_manager import TerminalManager
 
 EXEC_TASKS = {}
 EXEC_TASKS_LOCK = threading.Lock()
@@ -26,6 +27,7 @@ MAX_FILE_SIZE = 10 * 1024 * 1024
 EXEC_TIMEOUT = 300
 
 ENV_MANAGER = None
+TERMINAL_MANAGER = None
 
 
 def normalize_base_path(path):
@@ -231,6 +233,9 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         self.route()
 
+    def do_DELETE(self):
+        self.route()
+
     def do_HEAD(self):
         self.route()
 
@@ -286,6 +291,9 @@ class Handler(BaseHTTPRequestHandler):
         handler = routes.get((path, self.command))
         if handler:
             handler()
+            return
+        if path.startswith("/api/terminals"):
+            self.handle_api_terminals(path, query)
             return
         if path.startswith("/api/task/"):
             self.handle_api_task(path)
@@ -579,6 +587,98 @@ class Handler(BaseHTTPRequestHandler):
             "runtime": runtime,
         })
 
+    def handle_api_terminals(self, path, query):
+        parts = [p for p in path.split("/") if p]
+        # /api/terminals, /api/terminals/run, /api/terminals/{id}, ...
+        if len(parts) == 2 and self.command == "GET":
+            self.send_json(HTTPStatus.OK, TERMINAL_MANAGER.list_terminals())
+            return
+
+        if len(parts) == 3 and parts[2] == "run" and self.command == "POST":
+            try:
+                data = self.read_json_body()
+            except (ValueError, json.JSONDecodeError) as exc:
+                self.send_json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+                return
+            script_path = (data.get("script_path") or data.get("path") or "").strip()
+            args_str = (data.get("args") or "").strip()
+            cwd_str = (data.get("cwd") or "").strip()
+            if not script_path:
+                self.send_json(HTTPStatus.BAD_REQUEST, {"error": "script_path required"})
+                return
+            ok, result = validate_path(script_path)
+            if not ok:
+                self.send_json(HTTPStatus.BAD_REQUEST, {"error": result})
+                return
+            target_path = result
+            if not target_path.exists():
+                self.send_json(HTTPStatus.NOT_FOUND, {"error": "File not found"})
+                return
+            runtime = ENV_MANAGER.resolve_runtime(script_path)
+            try:
+                terminal = TERMINAL_MANAGER.create_and_run(
+                    script_path, args_str, cwd_str, runtime, ENV_MANAGER
+                )
+            except ValueError as exc:
+                self.send_json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+                return
+            self.send_json(HTTPStatus.OK, terminal)
+            return
+
+        if len(parts) >= 3:
+            terminal_id = parts[2]
+            action = parts[3] if len(parts) > 3 else None
+
+            if action == "stdin" and self.command == "POST":
+                try:
+                    data = self.read_json_body()
+                except (ValueError, json.JSONDecodeError) as exc:
+                    self.send_json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+                    return
+                line = data.get("line", data.get("input", ""))
+                if line is None:
+                    line = ""
+                if not isinstance(line, str):
+                    self.send_json(HTTPStatus.BAD_REQUEST, {"error": "line must be a string"})
+                    return
+                try:
+                    TERMINAL_MANAGER.write_stdin(terminal_id, line)
+                except ValueError as exc:
+                    self.send_json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+                    return
+                self.send_json(HTTPStatus.OK, {"ok": True})
+                return
+
+            if action == "stop" and self.command == "POST":
+                try:
+                    result = TERMINAL_MANAGER.stop_terminal(terminal_id)
+                except ValueError as exc:
+                    self.send_json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+                    return
+                self.send_json(HTTPStatus.OK, result)
+                return
+
+            if self.command == "GET" and action is None:
+                params = parse_qs(query, keep_blank_values=True)
+                offset = int(params.get("offset", ["0"])[0] or "0")
+                terminal = TERMINAL_MANAGER.get_terminal(terminal_id, offset)
+                if not terminal:
+                    self.send_json(HTTPStatus.NOT_FOUND, {"error": "Terminal not found"})
+                    return
+                self.send_json(HTTPStatus.OK, terminal)
+                return
+
+            if self.command == "DELETE" and action is None:
+                try:
+                    result = TERMINAL_MANAGER.delete_terminal(terminal_id)
+                except ValueError as exc:
+                    self.send_json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+                    return
+                self.send_json(HTTPStatus.OK, result)
+                return
+
+        self.send_json(HTTPStatus.NOT_FOUND, {"error": "Not found"})
+
     def handle_api_task(self, path):
         parts = path.split("/")
         if len(parts) < 4:
@@ -722,9 +822,10 @@ def parse_args():
 
 
 def main():
-    global ENV_MANAGER
+    global ENV_MANAGER, TERMINAL_MANAGER
     args = parse_args()
     ENV_MANAGER = EnvManager(args.config_dir)
+    TERMINAL_MANAGER = TerminalManager(args.config_dir)
 
     socket_path = os.path.abspath(args.socket)
     if os.path.exists(socket_path):

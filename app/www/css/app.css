@@ -279,6 +279,63 @@ button, input, select, textarea { font: inherit; }
   border-bottom: 1px solid #444;
   flex-shrink: 0;
   gap: 8px;
+  min-width: 0;
+}
+
+.output-header-start {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  flex: 1;
+}
+
+.terminal-selector {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  flex: 1;
+  max-width: 420px;
+}
+
+.terminal-selector-label {
+  font-size: 11px;
+  color: var(--muted);
+  flex-shrink: 0;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.terminal-select {
+  flex: 1;
+  min-width: 0;
+  max-width: 280px;
+  padding: 3px 8px;
+  font-size: 12px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--surface);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.terminal-select:focus {
+  outline: none;
+  border-color: #0078d4;
+}
+
+.btn-delete-terminal {
+  flex-shrink: 0;
+  padding: 2px 8px;
+  font-size: 11px;
+  color: #f88;
+  border-color: #633;
+}
+
+.btn-delete-terminal:hover:not(:disabled) {
+  background: rgba(255, 80, 80, 0.15);
+  border-color: #a44;
 }
 
 .output-header-left {
@@ -742,6 +799,24 @@ button, input, select, textarea { font: inherit; }
     padding: 6px 10px;
     gap: 6px;
     flex-wrap: wrap;
+  }
+
+  .output-header-start {
+    width: 100%;
+    flex-wrap: wrap;
+  }
+
+  .terminal-selector {
+    max-width: none;
+    width: 100%;
+  }
+
+  .terminal-selector-label {
+    display: none;
+  }
+
+  .terminal-select {
+    max-width: none;
   }
 
   .output-status {
