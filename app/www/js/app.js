@@ -123,6 +123,7 @@
 
   function initEditor() {
     if (editor || !els.editorPanel) return;
+    var isMobile = /Android|iPhone|iPad|iPod|Mobile|webOS/i.test(navigator.userAgent);
     editor = CodeMirror(els.editorPanel, {
       value: "",
       mode: "python",
@@ -132,7 +133,8 @@
       tabSize: 4,
       indentWithTabs: false,
       lineWrapping: false,
-      autofocus: true,
+      inputStyle: "textarea",
+      autofocus: !isMobile,
       extraKeys: {
         Tab: function (cm) {
           if (cm.somethingSelected()) cm.indentSelection("add");
@@ -147,6 +149,7 @@
       setDirty(editor.getValue() !== savedContent);
     });
     applyTheme();
+    setTimeout(function () { editor.refresh(); }, 0);
   }
 
   function setCurrentPath(path) {
@@ -177,6 +180,7 @@
         editor.setValue(data.content);
         editor.clearHistory();
         setDirty(false);
+        setTimeout(function () { editor.refresh(); }, 0);
       })
       .catch(function (err) {
         showToast("加载失败: " + err.message, "error");
@@ -276,7 +280,7 @@
   function renderOutputStream() {
     const stream = ensureOutputStream();
     if (!stream) return;
-    if (window.pyrunnerAnsi) {
+    if (window.pyrunnerAnsi && streamRawText) {
       stream.innerHTML = window.pyrunnerAnsi.toHtml(streamRawText);
     } else {
       stream.textContent = streamRawText;
